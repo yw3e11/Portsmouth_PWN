@@ -1,0 +1,1770 @@
+---
+title: "Portsmouth PWN"
+author: "Phil Wu: phil.wu@soton.ac.uk"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, out.width="600px", dpi=120)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(fig_caption = TRUE)
+knitr::opts_chunk$set(fig_height = 3) # default, make it bigger to stretch vertical axis
+knitr::opts_chunk$set(fig_width = 4) # full width
+knitr::opts_chunk$set(fig.align = 'center') # full width
+knitr::opts_chunk$set(tidy = TRUE) # tidy up code in case echo = TRUE
+options(digits=3) 
+# Set start time ----
+startTime <- Sys.time() 
+
+myPackages <- c("tidyverse", 
+                "lubridate", 
+                "zoo", 
+                "xts", 
+                "chron", 
+                "data.table", 
+                "scales",
+                "DT",
+                "fTrading", 
+                "data.table", 
+                "knitr", 
+                "gridExtra", 
+                "plotly", 
+                "stringr", 
+                "kableExtra", 
+                "maptools" ,
+                "ggmap",
+                "ggplot2",
+                "ggsn",
+                "sf",
+                "leaflet", 
+                "fmsb", 
+                "RColorBrewer",
+                #"plyr", # this library clash with dplyr all the time. 
+                "png")
+#"sp" ,
+#"rgdal",
+#"raster", 
+#"rasterVis" ,
+#"rgeos")
+
+#devtools::install_github("tidyverse/ggplot2")
+
+required_packages <- function(x,y){
+  for( i in x ){
+    if( ! require( i , character.only = TRUE ) ){
+      if( Sys.info()["sysname"] == "Linux" ){
+        install.packages( i , repos=y , type="source" , quiet=TRUE , dependencies = TRUE , verbose = FALSE )
+      } else {
+        install.packages( i , repos=y , quiet=TRUE , dependencies = TRUE , verbose = FALSE )
+      }
+      require( i , character.only = TRUE, quietly = TRUE )
+    }
+  }
+}
+
+required_packages((myPackages),"http://cran.rstudio.com/")
+
+# When find functions under dplyr (e.g. group_by) not working, try detach the packpage of "plyr"
+#detach(package:plyr)
+
+# Housekeeping
+#rm(list=ls(all=TRUE)) # remove all objects from workspace
+
+#Extended palette
+palette_Dark2 <- colorRampPalette(brewer.pal(8, "Dark2"))
+```
+
+```{r}
+dd <- read.csv("./Data/gosport_2017_18.csv", header = T, sep = ",")
+
+dd %>% 
+  mutate(Date = as.Date(Date, format = "%d/%m/%Y", tz = "GMT")) -> dd_portsmouth
+
+head(dd_portsmouth)
+```
+
+
+Electricity data - Charles Dickens 
+
+Pickwick House
+Copperfield House
+Barkis House
+Nicklebey House
+
+
+```{r}
+sheetNames_CDE <- c("Pickwick_House",
+                    "Copperfield_House",
+                    "Barkis_House",
+                    "Nicklebey_House")
+
+
+ImportXLSX <- function(x){
+  temp <- readxl::read_excel("./Data/Charles Dickens Half Hourly by block.xlsx", sheet = x , col_names = T)
+  
+  temp <- temp %>% 
+    dplyr::select(1:49) %>% 
+    setNames(c("Date", format(seq.POSIXt(as.POSIXct(Sys.Date()+1/48), as.POSIXct(Sys.Date()+1), by = "30 min"),"%H:%M", tz="GMT"))) %>% 
+    mutate(Building = x) %>% 
+    gather(Time, Power, -Date, -Building)  %>% 
+    mutate(DateTime = paste(Date, " ", Time)) %>% 
+    #unite(DateTime, c("Date", "Time"), sep = " ") %>% 
+    mutate(DateTime = ymd_hm(DateTime))
+  #    mutate(Time = as.POSIXct(Time, format = "%H:%M", tz="GMT")) 
+  return(temp)
+}
+
+
+# CDE_import: half hourly power consumption of all four buildings in 2017/18
+CDE_import <- lapply(sheetNames_CDE, ImportXLSX) %>%
+  bind_rows()  # the "bind_row" binds all rows together. in this case, a long table is easier to manage
+
+
+CDE_import %>% 
+  arrange(DateTime) %>% 
+  #head(384) #%>% 
+  group_by(Building, Date) %>% 
+  summarise(PowerDay = sum(Power)) -> CDE_import_day
+#head(100)
+
+#plot_CDE_demand_day <- 
+
+ggplot(CDE_import_day)+
+  #facet_wrap(~Building, ncol = 2)+
+  geom_line(aes(x= Date, y = PowerDay, group=Building, colour=Building), size=0.2) +
+  geom_smooth(aes(x=Date, y=PowerDay, group=Building, colour=Building), size=0.4, alpha=0)+
+  theme(legend.position = "bottom")+
+  labs(y="kWh / day", 
+       title = "Import per day")+
+  scale_x_datetime(date_breaks = "1 month", date_labels = "%b" )
+
+
+```
+
+```{r}
+CDE_import_day %>% 
+  filter(Building == "Copperfield_House") %>% 
+  ggplot()+
+  geom_line(aes(x=Date, y=PowerDay), colour = "yellowgreen")+
+  labs(y="kWh / day")+
+  scale_x_datetime(date_breaks = "1 month", date_labels = "%y-%b" ) -> plot_copperfield_import_day
+
+ggplotly(plot_copperfield_import_day)
+```
+
+
+```{r}
+#ggplotly(plot_CDE_import_day)
+
+```
+
+```{r}
+copperfield_import_day <- CDE_import_day %>% 
+  filter(Building == "Copperfield_House")
+
+ggplot()+
+  geom_line(data=dd_portsmouth, aes(x=as.POSIXct(Date), y=HDD*5), colour="red", alpha=0.5)+
+  geom_line(data=copperfield_import_day, aes(x=Date, y=PowerDay), colour = "yellowgreen")+
+  scale_y_continuous(sec.axis = sec_axis(~./5, name = "Degree Day (against 15.5 C)"),expand = c(0.01,0.01))+
+  scale_x_datetime(date_breaks = "2 month" , 
+                   date_labels = "%Y-%b" , 
+                   limits = as.POSIXct(c("2017-06-01", "2018-05-10")), 
+                   expand = c(0.01,0.01))+
+  theme_light()+
+  labs(x="Date", y="kWh / day", title = "Copperfield House")
+
+```
+
+
+
+```{r}
+CDE_import %>% 
+  arrange(DateTime) %>% 
+  head(384) 
+```
+
+
+
+```{r}
+CDE_import %>% 
+  arrange(DateTime) %>% 
+  group_by(Building, Date) %>% 
+  summarise(PowerDay = sum(Power)) %>%  # note: original data was in half hourly basis so needs 1/2
+  separate(Date, into = c("Year", "Month", "Day"), "-") %>% 
+  mutate(YearMonth = paste(Year,"-", Month, "-01")) %>% 
+  mutate(YearMonth = ymd(YearMonth)) %>% 
+  #head(100)
+  #group_by(Building, YearMonth) %>% 
+  #summarise(PowerMonth = sum(Power)) %>% 
+  #head(100)
+  #dplyr::filter(Building == "Barkis_House") %>% 
+  ggplot()+
+  facet_wrap(~Building)+
+  geom_boxplot(aes(x=YearMonth, y=PowerDay, group = YearMonth, colour = Building))+
+  theme_minimal()+
+  theme(legend.position = "none") +
+  labs(y="Power consumption per day, kWh", x="Month")+
+  scale_x_date(date_breaks = "1 month", date_labels = "%b")
+#scale_x_datetime(date_breaks = "1 week", limits = as.POSIXct(c("2018-02-25","2018-03-15")))
+```
+
+Some demographic and building size information
+
+```{r}
+Building <- c("Barkis", "Nicklebey", "Pickwick", "Copperfield")
+FloorCount <- c(18, 18, 12, 12)
+Flat <- c( 136, 136, 88, 88 )
+Totalarea <- c( 8024 ,8024 , 4532 , 4532 )
+
+CDE_size <- data.frame(Building, FloorCount, Flat, Totalarea)
+
+CDE_size
+```
+
+
+PV output
+
+```{r}
+sheetNames_CDE_PV <- c("Pickwick_30kWp",
+                       "Copperfield_30kWp",
+                       "Barkis_30kWp",
+                       "Nicklebey_30kWp")
+
+
+ImportXLSX <- function(x){
+  temp <- readxl::read_excel("./Data/Charles Dickens Half Hourly PV.xlsx", sheet = x , col_names = T)
+  
+  temp <- temp %>% 
+    dplyr::select(1:49) %>% 
+    setNames(c("Date", format(seq.POSIXt(as.POSIXct(Sys.Date()+1/48), as.POSIXct(Sys.Date()+1), by = "30 min"),"%H:%M", tz="GMT"))) %>% 
+    mutate(Building = x) %>% 
+    separate(Building, into = c("Building"), "_30kWp") %>% 
+    gather(Time, Power, -Date, -Building)  %>% 
+    mutate(DateTime = paste(Date, " ", Time)) %>% 
+    #unite(DateTime, c("Date", "Time"), sep = " ") %>% 
+    mutate(DateTime = ymd_hm(DateTime))
+  #    mutate(Time = as.POSIXct(Time, format = "%H:%M", tz="GMT")) 
+  return(temp)
+}
+
+
+# CDE_demand: half hourly power consumption of all four buildings in 2017/18
+CDE_PV<- lapply(sheetNames_CDE_PV, ImportXLSX) %>%
+  bind_rows()  # the "bind_row" binds all rows together. in this case, a long table is easier to manage
+
+head(CDE_PV)
+
+CDE_PV %>% 
+  arrange(DateTime) %>% 
+  #head(384) #%>% 
+  group_by(Building, Date) %>% 
+  summarise(PowerDay = sum(Power)) %>% 
+  #head(100)
+  ggplot()+
+  geom_line(aes(x= Date, y = PowerDay, group=Building, colour=Building)) +
+  theme(legend.position = "bottom")+
+  labs(y="PV output kWh / day")+
+  scale_x_datetime(date_breaks = "1 month", date_labels = "%y-%m" )
+
+```
+
+
+```{r}
+CDE_import %>% 
+  separate(Building, "Building", "_House") %>% 
+  mutate(Category = "Import") -> CDE_import
+
+CDE_PV %>% 
+  mutate(Category = "PV") -> CDE_PV
+
+CDE_import_pv <- rbind(CDE_import, CDE_PV)
+
+CDE_consumption <- CDE_import_pv %>% 
+  group_by(Building, DateTime, Date, Time) %>% 
+  summarise(Power = sum(Power)) %>% 
+  mutate(Category = "Consumption") %>% 
+  dplyr::select(c(Date, Building, Time, Power, DateTime,Category)) %>% 
+  ungroup()
+
+
+```
+
+```{r}
+CDE_all <- rbind(CDE_import, CDE_PV, CDE_consumption) %>% 
+  left_join(CDE_size, by = "Building") %>% 
+  mutate(PowerFlat = ifelse(Category == "Consumption", Power / Flat, Power)) %>% 
+  mutate(PowerArea = ifelse(Category == "Consumption", Power / Totalarea, Power)) 
+
+head(as.data.table(CDE_all)[Category == "Consumption"])
+```
+
+
+
+
+```{r}
+CDE_all %>% 
+  filter(Category != "Import") %>% 
+  group_by(Building, Date, Category) %>% 
+  summarise(PowerDay = sum(Power)) %>% 
+  #head()
+  ggplot(group = Category)+
+  facet_grid(Building ~ Category)+
+  geom_line(aes(x=Date, y=PowerDay, group=Building, colour=Building))+
+  labs(y="kWh / Day", 
+       title="Daily energy consumption vs PV")+
+  scale_x_datetime(date_breaks = "2 month", date_labels = "%m/%y")+
+  theme_light()+
+  theme(legend.position = "none")
+
+
+```
+
+
+
+
+```{r}
+CDE_all %>% 
+  filter(Category == "Consumption") %>% 
+  arrange(DateTime) %>% 
+  #group_by(Building) %>% 
+  #summarise(DailyConsumption = sum(PowerFlat)) %>% 
+  #head()
+  mutate(Date2 = Date) %>% 
+  separate(Date2, into = c("Year", "Month", "Day"), "-") %>% 
+  mutate(YearMonth = paste(Year,"-", Month, "-01")) %>% 
+  mutate(YearMonth = ymd(YearMonth)) %>% 
+  #head(100)
+  group_by(Building, Date, YearMonth) %>% 
+  summarise(DailyConsumption = sum(PowerFlat)) %>% 
+  #head()
+  #group_by(Building, YearMonth) %>% 
+  #summarise(PowerMonth = sum(Power)) %>% 
+  #head(100)
+  #dplyr::filter(Building == "Barkis_House") %>% 
+  ggplot()+
+  facet_wrap(~Building)+
+  geom_boxplot(aes(x=YearMonth, y=DailyConsumption, group = YearMonth, colour = Building))+
+  theme(legend.position = "none") +
+  labs(y="Power consumption per day, kWh", x="Month")+
+  scale_x_date(date_breaks = "1 month", date_labels = "%m")
+scale_x_datetime(date_breaks = "1 week", limits = as.POSIXct(c("2018-02-25","2018-03-15")))
+```
+
+
+```{r}
+CDE_all %>% 
+  group_by(Building, Date, Category) %>% 
+  summarise(PowerDay = sum(Power)) -> CDE_all_day 
+#head()
+
+plot_CDE_all_day <- ggplot(CDE_all_day)+
+  facet_wrap(~Building)+
+  geom_line(aes(x=Date, y=PowerDay, group=Category, colour=Category))+
+  labs(y="kWh / Day")+
+  scale_x_datetime(date_breaks = "2 month", date_labels = "%m/%y")+
+  theme(legend.position = "bottom")
+
+ggplotly(plot_CDE_all_day)
+#plot_CDE_all_day
+```
+
+Zoom in to the 3 summer months, June to Sept 
+
+```{r}
+CDE_all %>% 
+  group_by(Building, Date, Category) %>% 
+  summarise(PowerDay = sum(Power)) -> CDE_summer_day
+
+
+plot_CDE_summer_day <- ggplot(CDE_summer_day)+
+  facet_wrap(~Building)+
+  geom_line(aes(x=Date, y=PowerDay, group=Category, colour=Category))+
+  #scale_color_brewer(palette = "Dark2")+
+  labs(y="kWh / Day", title="Summer June - Sept")+
+  scale_x_datetime(date_breaks = "4 week", limits = as.POSIXct(c("2017-06-01","2017-09-30")) , date_labels = "%b")+
+  theme(legend.position = "bottom")
+
+ggplotly(plot_CDE_summer_day)
+
+#plot_CDE_summer_day
+```
+
+
+
+```{r}
+#CDE_all %>% 
+#group_by(Building, Date, Category) %>% 
+#summarise(PowerDay = sum(Power)/2) %>% 
+#head()
+
+plot_CDE_all_hh <- ggplot(CDE_all)+
+  facet_wrap(~Building, ncol = 1)+
+  geom_line(aes(x=DateTime, y=Power, group=Category, colour=Category))+
+  #scale_color_brewer(palette = "Paired")+
+  #labs(y="kWh / Day")+
+  #scale_x_datetime(date_breaks = "4 week", limits = as.POSIXct(c("2017-11-01","2017-11-10")) , date_labels = "%b")+
+  theme(legend.position = "bottom")
+
+ggplotly(plot_CDE_all_hh)
+
+```
+
+
+
+```{r}
+CDE_all %>% 
+  filter(Building == "Barkis") %>% 
+  #filter(Category != "Import") %>% 
+  ggplot()+
+  #facet_wrap(~Building, ncol = 1)+
+  geom_line(aes(x=DateTime, y=Power, group=Category, colour=Category))+
+  scale_color_brewer(palette = "Set1")+
+  labs(y="kWh (half hourly)", 
+       x = "1 - 5 / July" ,
+       title = "Barkis - July")+
+  scale_x_datetime(date_breaks = "4 week", limits = as.POSIXct(c("2017-07-01","2017-07-5")) , date_labels = "%b")+
+  theme_minimal()+
+  theme(legend.position = "right")
+```
+
+
+```{r}
+CDE_all %>% 
+  filter(Building == "Barkis") %>% 
+  #filter(Category != "Import") %>% 
+  ggplot()+
+  #facet_wrap(~Building, ncol = 1)+
+  geom_line(aes(x=DateTime, y=Power, group=Category, colour=Category))+
+  scale_color_brewer(palette = "Set1")+
+  #scale 
+  labs(y="kWh (half hourly)", 
+       x = "1 - 5 / December" ,
+       title = "Barkis - December")+
+  scale_x_datetime(date_breaks = "4 week", 
+                   limits = as.POSIXct(c("2017-12-01","2017-12-5")) , 
+                   date_labels = "%b")+
+  theme_minimal()+
+  theme(legend.position = "bottom")
+```
+
+
+```{r}
+CDE_PV%>% 
+  group_by(Building) %>% 
+  summarise(AnnualPV = sum(Power)/30) %>% 
+  #head()
+  ggplot()+
+  geom_bar(aes(x=Building, y=AnnualPV), fill="lightblue", stat="identity")+ 
+  geom_text(aes(x=Building, y=AnnualPV, label=round(AnnualPV,0)), vjust=-0.5)+
+  labs(y="kWh / kWp")+
+  theme_minimal()
+```
+
+
+# Energy consumption data from gov.uk
+
+```{r}
+# run code below to load raw data into cd_postcode_energy
+
+cd_postcode <- read.csv("./Data/CD_postcode.csv", header = T, sep = ",", stringsAsFactors = F) %>% 
+  mutate(POSTCODE = postcode) %>% 
+  dplyr::select(-postcode) 
+
+head(cd_postcode)
+
+postcode_elec <- read.csv("../Energy_UK/Postcode level electricity estimates 2015 experimental.csv", header = T, sep = ",", stringsAsFactors = F)
+
+postcode_gas <- read.csv("../Energy_UK/Postcode_level_gas_estimates_2015_experimental.csv", header = T, sep = ",", stringsAsFactors = F)
+
+cd_postcode_electricity <- cd_postcode %>% 
+  left_join(postcode_elec, by = "POSTCODE") %>% 
+  mutate(Category = "Electricity") 
+
+cd_postcode_gas <- cd_postcode %>% 
+  left_join(postcode_gas, by = "POSTCODE") %>% 
+  mutate(Category = "Gas") 
+
+cd_postcode_energy <- rbind(cd_postcode_electricity, cd_postcode_gas) %>% 
+  dplyr::select(-OBJECTID) %>% 
+  filter(CONSUMPTION != "NA")
+
+```
+
+
+Create a spreadsheet for GIS
+
+```{r}
+head(cd_postcode)
+
+table_postcode_energy <- cd_postcode %>% 
+  left_join(postcode_elec, by = "POSTCODE") %>% 
+  #head() 
+  setnames(c("ID", "Area", "POSTCODE", "Electricity", "ElecMeter", "ElecMean", "ElecMedian")) %>% 
+  left_join(postcode_gas, by = "POSTCODE") %>% 
+  #head() 
+  setnames(c("ID", "Area", "Postcode", "Electricity", "ElecMeter", "ElecMean", "ElecMedian", "Gas", "GasMeter", "GasMean", "GasMedian")) %>% 
+  filter(Electricity != "NA" | Gas != "NA")
+
+head(table_postcode_energy)  
+
+nrow(table_postcode_energy)
+
+```
+
+
+
+
+```{r}
+#rm(cd_postcode_electricity, cd_postcode_gas)
+
+head(cd_postcode_energy)
+
+nrow(cd_postcode_energy)
+
+summary(cd_postcode_energy)
+
+cd_postcode_energy %>% 
+  group_by(Category) %>% 
+  summarise(mean = mean(METER_COUNT) , 
+            median = median(METER_COUNT),
+            min = min(METER_COUNT),
+            max = max(METER_COUNT) )
+
+ggplot(cd_postcode_energy) + 
+  facet_wrap(~Category)+
+  geom_bar(aes(x=POSTCODE, y=MEAN, fill = Category), stat = "identity")+
+  #theme_minimal()+
+  theme(axis.text.y=element_blank(), 
+        axis.ticks.y = element_blank(), 
+        legend.position = "none")+
+  labs(title = "Mean consumption per meter (based on postcode level data)", 
+       y = "kWh/meter/year", 
+       x = "Postcode") +
+  coord_flip()
+
+
+```
+
+
+
+```{r}
+
+cd_lsoa <- read.csv("./Data/CD_LSOA.csv", header = T, sep = ",", stringsAsFactors = F) 
+
+head(cd_lsoa)
+
+#mutate(POSTCODE = postcode, lsoa_code = LSOA11CD) %>% 
+#  dplyr::select(-postcode, -LSOA11CD) 
+
+#head(cd_lsoa)
+
+```
+
+
+```{r}
+lsoa_elec <- read.csv("../Energy_UK/LSOA_domestic_electricity_2015.csv", 
+                      header = T, 
+                      sep = ",", 
+                      stringsAsFactors = F) %>% 
+  setnames(c("la_name", "la_code", "mosa_name", "msoa_code", "lsoa_name", "lsoa_code", 
+             "Total_kWh", "Meter", "Mean", "Median")) %>%
+  mutate(Median = as.integer(Median)) %>% 
+  mutate(Category = "Electricity") 
+
+lsoa_gas <- read.csv("../Energy_UK/LSOA_domestic_gas_2015.csv", 
+                     header = T, 
+                     sep = ",", stringsAsFactors = F) %>% 
+  setnames(c("la_name", "la_code", "mosa_name", "msoa_code", "lsoa_name", "lsoa_code", 
+             "Total_kWh", "Meter", "Mean", "Median")) %>%
+  mutate(Median = as.integer(Median)) %>% 
+  mutate(Category = "Gas")   
+
+head(lsoa_gas)
+
+```
+
+```{r}
+cd_lsoa_elec <- cd_lsoa %>% 
+  mutate(lsoa_code = LSOA11CD) %>% 
+  dplyr::select(lsoa_code, ID) %>% 
+  left_join(lsoa_elec, by = "lsoa_code") 
+
+cd_lsoa_gas <- cd_lsoa %>% 
+  mutate(lsoa_code = LSOA11CD) %>% 
+  dplyr::select(lsoa_code, ID) %>% 
+  left_join(lsoa_gas, by = "lsoa_code") 
+
+cd_lsoa_energy <- rbind(cd_lsoa_elec, cd_lsoa_gas) %>% 
+  dplyr::select(-la_name, -la_code, -mosa_name, -msoa_code)
+
+cd_lsoa_energy
+
+```
+
+```{r}
+ggplot(cd_lsoa_energy)+
+  facet_wrap(~Category)+
+  theme_minimal()+
+  geom_bar(aes(x=ID, y=Mean, fill=Category), stat = "identity")
+```
+
+
+```{r}
+Category <- c("Electricity", "Gas")
+Consumption <- c(6944921.345, 14331178.37)
+Meter <- c(286, 27)
+Mean <- c(24283, 530784)
+Median <- c(9348 , 145198)
+
+
+cd_nonDom_energy <- data.frame(Consumption, Meter, Mean, Median, Category)
+
+cd_nonDom_energy <- cd_nonDom_energy %>% 
+  mutate(Sector = "Non domestic")
+
+cd_nonDom_energy <- cd_nonDom_energy[, c("Category", "Consumption", "Meter", "Mean", "Sector")]
+cd_nonDom_energy
+```
+
+```{r}
+cd_lsoa_energy
+
+cd_lsoa_energy %>% 
+  group_by(Category) %>% 
+  #head()
+  summarise(Consumption = sum(Total_kWh), Meter = sum(Meter)) %>% 
+  mutate(Mean = Consumption / Meter , Sector = "Domestic") %>% 
+  rbind(cd_nonDom_energy) %>% 
+  ggplot()+
+  facet_wrap(~Sector)+
+  theme_minimal()+
+  geom_bar(aes(x=Category, y=Consumption, fill=Category), stat="identity")+
+  geom_text(aes(x=Category, y=Consumption, label=paste(round(Consumption/1000000,0),"GWh") ), vjust=-0.5)
+
+```
+
+```{r}
+gridwatch <- read.csv("../Energy_UK/gridwatch.csv", header = T, sep = ",", stringsAsFactors = F) %>% 
+  mutate(DateTime = as.POSIXct(timestamp)) %>% 
+  dplyr::select(-id, -timestamp, -frequency,-ew_ict, -french_ict, -irish_ict, -dutch_ict, -north_south, -scotland_england) 
+```
+
+If need to create individual timestamps  
+```{r}
+#head(gridwatch)
+
+#gridwatch %>% 
+#  mutate(Date2 = timestamp) %>% 
+#  separate(Date2, into = c("space", "Date3", "Time3"),sep =" ") %>% 
+#  dplyr::select(-space) %>% 
+#  separate(Date3, into=c("Year", "Month", "Day"), sep="-") %>% 
+#  separate(Time3, into=c("Hour", "Minute", "Second"), sep=":") 
+```
+
+```{r}
+#head(gridwatch, 20)
+```
+
+
+```{r}
+#names(gridwatch)
+
+#head(gridwatch) %>%
+#  dplyr::select(-id, -timestamp, -frequency,-ew_ict, -french_ict, -irish_ict, -dutch_ict, -north_south, -scotland_england) 
+```
+
+Seasonal average - 2011 to 2018
+
+```{r}
+gw1 <-gridwatch %>% 
+  gather(Category, Amount, -DateTime) %>% 
+  mutate(Date = DateTime ) %>%
+  separate(Date, into=c("Date","Time"), sep=" ") %>% 
+  mutate(Date = as.Date(Date))  
+#head()
+
+head(gw1)  
+
+gw1 %>% 
+  #filter(Category == "demand") %>% 
+  mutate(D2=Date) %>% 
+  separate(D2, into=c("y","m","d"), sep="-") %>%
+  #head()
+  #mutate(d = "01") %>% 
+  #unite(month, c("y","m","d"), sep = "-") %>% 
+  mutate(month = paste(y,"-", m, "- 01")) %>% 
+  mutate(month = as.Date(month, format="%Y - %m - %d")) -> gw2
+
+
+gw2 %>% 
+  filter(!Category %in% c("demand", "ocgt", "oil", "other", "hydro", "pumped" )) %>% 
+  group_by(month, Category) %>% 
+  summarise(MonthTotal = sum(Amount)) %>%
+  #head()
+  filter(month!="2011-05-01") %>% 
+  filter(month!="2018-06-01") %>% 
+  #head(20)
+  ggplot()+
+  geom_area(aes(x=month, y=MonthTotal, group=Category, fill=Category))+
+  #geom_line(aes(x=month, y=MonthTotal, group=Category, colour=Category))+
+  #geom_point(aes(x=month, y=MonthTotal, group=Category, colour=Category), size=1)+
+  scale_x_date(date_breaks = "6 month", date_labels = "%Y\n%m")+
+  scale_fill_brewer(palette = "Dark2")+
+  theme_minimal()
+
+gw2 %>% 
+  group_by(Category) %>% 
+  summarise(sum=sum(Amount)) %>% 
+  head(20)
+
+
+```
+
+```{r}
+head(gw1)
+```
+
+Elephant diagram for a random chosen day in 2018
+
+```{r}
+gw1 %>% 
+  filter(Date == "2018-05-01") -> temp 
+
+temp %>% 
+  filter(Category != "demand") %>% 
+  ggplot()+
+  geom_area(aes(x=Time, y=Amount, group=Category, fill=Category))
+
+```
+
+```{r}
+gw_demand <-  gw1 %>% 
+  filter(Category == "demand")
+
+str(gw_demand)
+
+gw_demand %>% 
+  #head() %>% 
+  mutate(t2 = Time) %>% 
+  separate(t2, into=c("h","m"), sep = ":") %>% 
+  mutate(t2= paste(h,":",m,": 00")) %>% 
+  mutate(t2= gsub(" ","", t2)) %>% 
+  #mutate(t3 = strptime(t2, format = "%H:%M:%S")) %>% 
+  dplyr::select(-h, -m) %>% 
+  #head()
+  ggplot()+
+  geom_boxplot(aes(x=t2, y=Amount))
+
+
+```
+
+```{r}
+head(gw_demand$DT, 1)
+tail(gw_demand$DT, 1)
+```
+
+
+
+
+
+```{r}
+
+gw_demand <- gw_demand %>% 
+  #head() %>% 
+  mutate(t2 = Time) %>% 
+  separate(t2, into=c("h","m"), sep = ":") %>% 
+  mutate(t2= paste(h,":",m,": 00")) %>% 
+  mutate(t2= gsub(" ","", t2)) %>% 
+  #mutate(t3 = strptime(t2, format = "%H:%M:%S")) %>% 
+  dplyr::select(-h, -m) %>% 
+  mutate(DT = as.POSIXct(paste(Date,t2))) 
+
+```
+
+
+```{r}
+
+#timeSeries_30min <- seq.POSIXt(head(gw_demand$DT, 1), tail(gw_demand$DT, 1), by="30 min")
+
+timeSeries_30min <-seq.POSIXt(as.POSIXct("2011-05-28 00:00:00"), as.POSIXct("2018-06-07 00:00:00"), by="30 min")
+
+temp <- period.sum(gw_demand$Amount, seq(4,nrow(gw_demand), by=4))
+
+as.data.frame(temp)
+
+```
+
+```{r}
+gw_1 <- gw_demand %>% 
+  mutate(DateTime = DT) %>% 
+  dplyr::select(DateTime, Amount, Date, Time=t2) %>% 
+  filter(DateTime > as.POSIXct("2011-05-27 23:59:59")) %>% 
+  filter(DateTime < as.POSIXct("2018-06-07 00:00:00")) 
+
+head(gw_demand)
+
+cut.POSIXt(gw_1$DateTime, "hour")
+```
+
+
+```{r}
+head(gw_demand)
+```
+
+
+
+
+
+
+
+```{r}
+gw_demand %>% 
+  dplyr::select(DateTime, Amount) %>% 
+  mutate(DateHour = cut.POSIXt(DateTime, "hour")) %>% 
+  group_by(DateHour) %>% 
+  summarise(HourSum = sum(Amount)) %>% 
+  #head()
+  mutate(Hour = gsub(".* ", "", DateHour)) %>% 
+  mutate(Hour = as.POSIXct(Hour, format="%H:%M")) %>% 
+  #head()
+  ggplot(aes(x=Hour, y=HourSum))+
+  geom_boxplot()+
+  scale_x_datetime(date_breaks = "2 hour", date_labels = "%H:%M") -> fig_temp
+
+ggplotly(fig_temp)
+
+```
+
+
+```{r}
+
+head(gw1)
+```
+
+
+```{r}
+gw1 %>% 
+  filter(Category !="demand") %>% 
+  dplyr::select(-Date, -Time) %>% 
+  mutate(DateHour = cut.POSIXt(DateTime, "hour")) %>% 
+  mutate(Hour = gsub(".* ", "", DateHour)) %>% 
+  mutate(Hour = as.POSIXct(Hour, format="%H:%M")) %>%   
+  group_by(Hour, Category) %>% 
+  summarise(HourMean = mean(Amount), min=min(Amount), max=max(Amount)) -> gw_hour_all
+
+head(gw_hour_all,100)
+
+gw_hour_all %>% 
+  filter(Category == "coal") %>% 
+  head(100)
+
+ggplot(gw_hour_all)+
+  geom_area(aes(x=Hour, y=HourMean, group = Category, fill=Category))+
+  #geom_errorbar(aes(x=Hour, y=HourMean, ymin=min, ymax=max), position="identity")+
+  scale_x_datetime(date_breaks = "2 hour", date_labels = "%H:%M")
+
+```
+
+
+```{r}
+gw_demand %>% 
+  dplyr::select(DateTime, Amount)  %>% 
+  mutate(timePeriod = floor_date(DateTime, "30minutes")) %>% 
+  group_by(timePeriod) %>% 
+  summarise(HH_sum = sum(Amount)) %>% 
+  #head()
+  mutate(time2 = timePeriod) %>% 
+  separate(time2, into=(c("Date", "Time")), sep=" ") %>% 
+  #dplyr::select(-t2) %>% 
+  #head()
+  ggplot()+
+  geom_boxplot(aes(x=as.POSIXct(Time, format="%H:%M:%S"), y=HH_sum/6000, group=Time))+
+  theme_minimal()+
+  scale_x_datetime(date_labels = "%H:%M", date_breaks = "3 hour", name = "Time (half hour interval)")+
+  labs(title="HH data based on Grid Watch")
+
+
+
+```
+
+
+```{r}
+gw_demand %>% 
+  arrange(desc(Amount)) %>% 
+  mutate(day = weekdays(Date)) %>% 
+  dplyr::select(-t2, -DT) %>% 
+  head(30)
+
+```
+
+```{r}
+head(gw_hour_all)
+```
+```{r}
+csvList_elexon <- list.files("../Energy_UK/elexon/10_min_demand_2009-2017/", pattern = "*.csv", full.names = T, recursive = F)
+csvList_elexon
+importCsv_elexon <- function(x){
+  temp_elexon <- read_csv(x, col_names = F)
+  
+  return(temp_elexon)
+}
+
+elexon_all <- lapply(csvList_elexon, importCsv_elexon) %>%
+  bind_rows() # the "bind_row" binds all rows together. in this case, a long table is easier to manage
+
+head(elexon_all)
+```
+
+```{r}
+
+elexon <- elexon_all %>%
+  setnames(c("Type", "Source", "DateOut", "DateTimeIn", "Amount")) %>%   
+  mutate(DateTime = DateOut) %>% 
+  separate(DateOut, into=c("Date", "Time"), sep=" ")  
+
+
+elexon %>% 
+  mutate(timePeriod = floor_date(DateTime, "30minutes")) %>% 
+  group_by(timePeriod) %>% 
+  summarise(HH_sum = sum(Amount)) %>% 
+  #head()
+  mutate(time2 = timePeriod) %>% 
+  separate(time2, into=(c("Date", "Time")), sep=" ") %>% 
+  #dplyr::select(-t2) %>% 
+  #head()
+  ggplot()+
+  geom_boxplot(aes(x=as.POSIXct(Time, format="%H:%M:%S"), y=HH_sum/6000, group=Time))+
+  theme_minimal()+
+  scale_x_datetime(date_labels = "%H %p", date_breaks = "2 hour", name = "Time (half hour interval)")+
+  scale_y_continuous(limits = c(0, 300), name = "GW (HH average)")
+
+
+elexon_hh <- elexon %>% 
+  mutate(timePeriod = floor_date(DateTime, "30minutes")) %>% 
+  group_by(timePeriod) %>% 
+  summarise(HH_sum = sum(Amount)) %>% 
+  #head()
+  mutate(time2 = timePeriod) %>% 
+  separate(time2, into=(c("Date", "Time")), sep=" ") 
+
+```
+
+```{r}
+excelFile_substations <- "../Energy_UK/SAVE_Towns_All-time-periods_Processed.xlsx"
+sheetNames_substations <- readxl::excel_sheets(excelFile_substations) 
+#sheetNames_substations
+
+ImportXLSX <- function(x){
+  temp_sseSubstations <- readxl::read_xlsx( excelFile_substations , sheet = x, col_names = T) %>% 
+    #t() %>% 
+    #mutate_all(funs(replace(., is.na(.), 0)))%>% 
+    gather(Feeder, Amount, -Date.Time) %>% 
+    mutate(Substation = x) 
+  
+  return(temp_sseSubstations)
+}
+
+sseSubstation_all <- lapply( sheetNames_substations , ImportXLSX ) %>%
+  bind_rows() %>% 
+  mutate(Amount = ifelse(is.na(Amount), 0, Amount)) 
+
+
+
+head(sseSubstation_all)
+
+sum(sseSubstation_all$Amount)
+
+sseSubstation_all %>%
+  #head()
+  ungroup() %>% 
+  mutate(Feeder2=Feeder) %>% 
+  separate(Feeder, into=c("FD", "FDN"), sep="_") %>% 
+  #head(200)
+  #distinct(FD) %>% 
+  #head()
+  mutate(HH = floor_date(Date.Time, unit = "30minute") ) %>% 
+  #head(1000)
+  #mutate(Time = HH) %>% 
+  group_by(Substation, HH) %>% 
+  summarise(Sum_substation = sum(Amount)) %>%
+  #head(200)
+  separate(HH, into=c("Date", "Time"), sep=" ") -> sseSubstation_2   
+
+
+sseSubstation_2 %>% 
+  ggplot()+
+  facet_wrap(~Substation, ncol = 2)+
+  geom_boxplot(aes(x=as.POSIXct(Time, format="%H:%M:%S"), y=Sum_substation / 1000000/0.5, group = Time, colour = Substation), outlier.size = 0)+
+  scale_x_datetime(date_labels = "%H %p")+
+  theme(legend.position = "bottom")+
+  labs(x="Time", y="MWe")
+#group_by(FD) %>% 
+#summarise(Sum_FD = sum(Amount)) %>% 
+#  head(30)
+
+```
+
+
+
+```{r}
+sseSubstation_all %>% 
+  #mutate(Feeder = )
+  distinct(Feeder) %>% 
+  head(100)
+```
+
+
+
+
+
+```{r}
+n2ex_dir <- "../Energy_UK/elexon/Auction_price"
+n2ex_filenames <- list.files(n2ex_dir)
+
+
+ImportCSV <- function(x){
+  
+  temp <- read_csv(paste(n2ex_dir, x, sep = "/"), col_names = F, skip = 3)
+  
+  return(temp)
+}
+
+n2ex <- lapply(n2ex_filenames, ImportCSV) %>%
+  bind_rows()  %>% 
+  as.data.frame() %>% 
+  setnames(c("Date", "Hours", "CET_time", "GBP_MWh") ) %>% 
+  mutate(Hours = gsub("\xa0-\xa0", " - ", Hours)) %>% 
+  mutate(CET_time = gsub("\xa0-\xa0", " - ", CET_time)) %>% 
+  mutate(GBP_MWh = GBP_MWh/100) %>% 
+  mutate(Price = GBP_MWh) %>% 
+  dplyr::select(-CET_time, -GBP_MWh) %>% 
+  separate(Hours, into=c("Hours"), sep=" - ") %>% 
+  mutate(Date = as.Date(Date, format="%d/%m/%Y"))
+
+
+n2ex_day <- n2ex %>% 
+  group_by(Hours) %>% 
+  summarise(Price = mean(Price))
+
+head(elexon_hh)
+
+
+
+n2ex %>% 
+  #head(200)
+  group_by(Date) %>% 
+  summarise(Price = mean(Price)) %>% 
+  ggplot()+
+  geom_point(aes(x=Date, y=Price), size = 0.3) + 
+  #geom_smooth(aes(x=Date, y=Price))+
+  theme_minimal()+
+  scale_x_date(date_breaks = "4 month", date_labels = "%Y \n %b")
+
+```
+
+
+```{r}
+elexon_hh_mean <- elexon_hh %>% 
+  group_by(Time) %>% 
+  summarise(hh_mean = mean(HH_sum))
+
+n2ex_h_mean <- n2ex %>% 
+  group_by(Hours) %>% 
+  summarise(h_mean = mean(Price))
+
+head(n2ex_h_mean$h_mean)
+
+ggplot()+
+  theme_minimal()+
+  geom_point(data=n2ex_h_mean, aes(x=Hours, y=h_mean), colour = "red")+
+  geom_point(data=elexon_hh_mean, aes(x=Time, y=hh_mean/3000 ), colour="blue")+
+  scale_y_continuous(limits = c(0,100), 
+                     sec.axis = sec_axis(~. *3000 , 
+                                         name="Demand, GW"))+
+  labs(y = "Auction price, GBP / MWh")+
+  theme(axis.title.y.right = element_text(colour = "blue"), 
+        axis.title.y.left = element_text(colour = "red"))
+
+
+```
+
+```{r}
+sheetNames_gva <- c("Total GVA", 
+                    "Population", 
+                    "GVA per head" , 
+                    "A Agriculture" , 
+                    "BDE Production other"  , 
+                    "C Manufacturing" ,
+                    "F Construction" , 
+                    "GHI Distribution" ,
+                    "J Information and comms" , 
+                    "K Finance" , 
+                    "L Real estate" , 
+                    "MN Business services" , 
+                    "OPQ Public admin" , 
+                    "RST Other services")
+
+
+#' Function to process each tab in the master XLS file
+#' 
+#' @param x the sheet name
+#' 
+ImportCSV_gva <- function(x){
+  
+  temp <- readxl::read_excel("../Socio-economic_data/regionalgvaibylainuk.xls", sheet = x, col_names = T, skip = 2)
+  
+  temp <- temp %>% 
+    mutate(LAcode = `LAU1 code`, 
+           City = `LA name`, 
+           Industry = `SIC07 Industry`) %>% 
+    dplyr::select(Region, LAcode, City, Industry, 
+                  Y1997=`1997`, Y1998=`1998`, Y1999=`1999`, Y2000=`2000`, 
+                  Y2001=`2001`, Y2002=`2002`, Y2003=`2003`, Y2004=`2004`, 
+                  Y2005=`2005`, Y2006=`2006`, Y2007=`2007`, Y2008=`2008`, 
+                  Y2009=`2009`, Y2010=`2010`, Y2011=`2011`, Y2012=`2012`, 
+                  Y2013=`2013`, Y2014=`2014`, Y2015=`2015`) %>% 
+    gather(key = "Year", value = "GVA", -Region, -LAcode, -City, -Industry) %>% 
+    dplyr::select(Region, LAcode, City, Industry, Year, GVA)
+  
+  return(temp)
+}
+
+
+# Load all the sheets
+gva_city <- lapply(sheetNames_gva, ImportCSV_gva) %>%
+  bind_rows() %>%  
+  as.data.frame() %>% 
+  mutate(Year= gsub("Y", "", Year)) %>% 
+  mutate(Year = as.numeric(Year))
+
+head(gva_city)
+```
+
+
+```{r}
+gva_city %>% 
+  filter(Industry == "All industries") %>% 
+  group_by(Region, Year) %>% 
+  summarise(GVA = sum(GVA)) %>% 
+  ungroup() %>% 
+  #head()
+  spread(key = Year, value = GVA) %>% 
+  #head()
+  mutate(Growth = percent((`2015` - `1997`)/`1997`)) %>% 
+  dplyr::select(Region, `1997`, `2015`, Growth) %>% 
+  setnames(c("Region", "Y1997", "Y2015", "Growth"))-> gva_growth
+
+gva_growth
+
+```
+
+
+```{r}
+gva_city %>% 
+  #as.data.table() %>% 
+  filter(!Industry %in% c("All industries", "All industries per head", "Population" ) ) %>% 
+  group_by(Region, Industry, Year) %>% 
+  summarise(GVA = sum(GVA)) %>% 
+  left_join(gva_growth, "Region") %>% 
+  dplyr::select(-Y1997, -Y2015) %>%
+  mutate(RegionGrowth = paste(Region, "\n", Growth)) %>% 
+  ggplot()+
+  facet_wrap(.~RegionGrowth)+
+  geom_area(aes(x=Year, y=GVA , group=Industry, fill = Industry))+ 
+  #geom_text(data=gva_growth, aes(x=2015, y=100000, label=Growth, group=Region))+
+  scale_x_discrete(breaks = seq(from = 1999,to =  2015, by =  5))+
+  theme_minimal()+
+  discrete_scale("fill", "manual", palette_Dark2)+
+  theme(legend.position = "bottom")
+
+```
+
+
+
+
+
+
+
+
+```{r}
+gva_city %>% 
+  filter(!Industry %in% c("All industries", "All industries per head", "Population" ) ) %>% 
+  filter(City == "Portsmouth" | City == "Southampton") %>% 
+  #filter(City == "Portsmouth" ) %>% 
+  #group_by(City, Industry, Year) %>% 
+  #summarise(GVA = sum(GVA)) %>% 
+  #head(20)
+  ggplot()+
+  facet_wrap(.~City , ncol = 1)+
+  geom_area(aes(x=Year, y=GVA , group=Industry, fill = Industry))+ 
+  scale_x_discrete(breaks = seq(from = 1999,to =  2015, by =  5))+
+  theme_minimal()+
+  discrete_scale("fill", "manual", palette_Dark2)+
+  theme(legend.position = "right")
+
+```
+
+```{r}
+gva_city %>% 
+  filter(Industry == "All industries per head") %>% 
+  filter(Region == "South East") %>% 
+  filter(Year == 2015) %>% 
+  #head()
+  arrange(desc(GVA)) %>% 
+  #nrow()
+  #head(20) %>% 
+  ggplot()+
+  geom_bar(aes(x=reorder(City, GVA), y=GVA), stat = "identity")+
+  coord_flip()+
+  geom_hline(yintercept = mean(subset(gva_city, Year == 2015 & Industry == "All industries per head" & City !="City of London")$GVA), colour = "red")+
+  geom_hline(yintercept = mean(subset(gva_city, Year == 2015 & Industry == "All industries per head" & Region=="South East")$GVA), colour = "blue") + 
+  geom_text(aes(x=3, y=mean(subset(gva_city, Year == 2015 & Industry == "All industries per head" & City!="City of London")$GVA), label = "UK"), colour = "red", hjust = 1.2)+
+  geom_text(aes(x=3, y=mean(subset(gva_city, Year == 2015 & Industry == "All industries per head" & Region=="South East")$GVA), label = "SE"), colour = "blue", hjust = -0.2) -> Fig_gva_SE
+#facet_wrap(.~City , ncol = 1)+
+#geom_area(aes(x=Year, y=GVA , group=Industry, fill = Industry))+ 
+#scale_x_discrete(breaks = seq(from = 1999,to =  2015, by =  5))+
+#theme_minimal()+
+#discrete_scale("fill", "manual", palette_Dark2)+
+#theme(legend.position = "right")
+
+ggplotly(Fig_gva_SE)
+```
+
+
+```{r}
+library(sf)
+gva_gis <- sf::st_read("../GIS/Cities/Local_Authority_Districts_December_2016_Full_Clipped_Boundaries_in_Great_Britain.shp") %>% 
+  mutate(City = lad16nm)
+
+#class(gva_gis)
+gva_city %>% 
+  filter(Year == 2015) %>% 
+  filter(Region == "South East") %>% 
+  filter(Industry == "All industries per head")  %>% 
+  left_join(gva_gis) %>% 
+  arrange(desc(GVA)) %>%
+  head(10) %>% 
+  #class()
+  #head()
+  leaflet() %>% 
+  addTiles() %>% 
+  addCircles(lng = ~long, lat = ~lat, weight = 1, radius = ~(GVA - 37765)*3 ) %>% 
+  addMarkers(lng = ~long, lat = ~lat, label = ~City, group ="TEST") %>% 
+  addLayersControl(overlayGroups = c("TEST", "WTF") )
+#addLabelOnlyMarkers(lng = ~long, lat = ~lat, label = ~City) 
+```
+
+
+```{r}  
+
+factpal2 <- colorNumeric(
+  palette = "RdYlGn", 
+  domain = gva_gis$GVA
+)
+
+#factpal2(gisGVA$GVA)
+head(gisGVA)
+
+gva_gis %>% 
+  right_join(gva_2015_se, by="City") %>% 
+  filter(Industry == "All industries per head") %>% 
+  arrange(desc(Industry)) %>%
+  #head(35) %>% 
+  #st_intersection(st_set_crs(st_as_sf(as(raster::extent(-2, 0.5, 50.5, 55.5), "SpatialPolygons")), st_crs(.))) %>% 
+  leaflet() %>% 
+  addTiles() %>% 
+  addPolygons(fillColor = ~factpal2(GVA) , fillOpacity = 0.6, 
+              stroke = T, color = "black", weight = 1.5 , 
+              label = ~(paste(City,":", GVA) ) ) 
+
+```
+
+
+```{r}
+head(gva_gis)
+
+```
+
+```{r}
+MMD <- read.csv("./Data/MMD_monthly.csv", header = T, sep = ",", stringsAsFactors = F) %>% 
+  mutate(Date = gsub("-", "-20", X)) %>% 
+  mutate(Date = paste("01-", Date, sep="")) %>% 
+  mutate(Date = as.Date(Date, format = "%d-%b-%Y")) %>% 
+  dplyr::select(Date, DayTime = DAY, NightTime = NIGHT, Total = TOTAL) %>% 
+  gather(Category, kWh, -Date, -Total) %>% 
+  mutate(Year = as.character(Date)) %>% 
+  separate(Year, into=c("Year", "Month"), sep = "-")
+
+
+head(MMD)  
+seq.Date(from = as.Date("2009-01-01"), to = as.Date("2016-01-01"), by = "12 months")
+
+MMD %>% 
+  ggplot()+
+  facet_wrap(~Category)+
+  geom_bar(aes(x=Date, y=kWh/1000, fill = Category), stat = "identity") +
+  #geom_vline(xintercept = seq.Date(from = as.Date("2009-01-01"), to = as.Date("2016-01-01"), by = "12 months") )+
+  #theme_minimal()+
+  #scale_x_date(date_breaks = "12 month", date_labels = "%Y")+
+  theme(legend.position = "bottom")+
+  #geom_text( aes(x =Date, y=32, label =Year ))+
+  labs(y="MWh / month") 
+
+```
+```{r}
+MMD %>%
+  mutate(MWe = ifelse(Category == "DayTime", kWh/1000/16/30, kWh/1000/8/30)) %>% 
+  #head()
+  ggplot()+
+  facet_wrap(~Category)+
+  geom_bar(aes(x=Date, y=MWe, fill = Category), stat = "identity") +
+  #geom_vline(xintercept = seq.Date(from = as.Date("2009-01-01"), to = as.Date("2016-01-01"), by = "12 months") )+
+  #theme_minimal()+
+  #scale_x_date(date_breaks = "12 month", date_labels = "%Y")+
+  theme(legend.position = "bottom")+
+  #geom_text( aes(x =Date, y=32, label =Year ))+
+  labs(y="MWe", title = "Based on 16h daytime v 8h nighttime") 
+```
+
+# create a series of colours for each class band
+class_bands <- as.character(unique(gis_portsmouth_gaze$Class))
+#colourMap <- colors()[1:length(class_bands)]
+colour_bands <- colorFactor("RdYlGn", gis_portsmouth_gaze$Class)
+
+unique(gis_portsmouth_gaze$Class)
+
+
+```{r}
+# import original gazetteer data
+gis_portsmouth_gaze <- sf::st_read("../GIS/Portsmouth/Charles_Dickens/Gazetteer.shp") %>% 
+  dplyr::select(Class = Classifica) %>%   
+  st_transform(4326)  # convert CRS to wgs84 
+
+head(gis_portsmouth_gaze)
+# check all classifications and see which one can be removed 
+
+gis_portsmouth_gaze %>%
+  group_by(Class) %>% 
+  summarise(Count = n()) %>% 
+  arrange(desc(Count)) %>% 
+  head(20)
+
+
+```
+
+```{r}
+# remove unwanted classes
+gis_portsmouth_gaze <- gis_portsmouth_gaze %>% 
+  filter(!Class %in% c("Property Shell", "Allocated Parking", "Car Park Space", 
+                       "Street Record", "Lock-Up Garage / Garage Court",  
+                       "Advertising Hoarding", "Additional Mail / Packet Addressee",  
+                       "Telecommunication" , "Ancillary Building", 
+                       "Car / Coach / Commercial Vehicle / Taxi Parking / Park And Ride Site", 
+                       "Postal Box", "Telephone Box", "Automated Teller Machine (ATM)", 
+                       "Hopper / Silo / Cistern / Tank", "Bus Shelter", "Vacant / Derelict Land", 
+                       "Transport")) %>% 
+  mutate(Class = gsub("Preparatory / First / Primary / Infant / Junior / Middle School", "School", Class)) %>% 
+  mutate(Class = gsub("Harbour / Port / Dock / Dockyard / Slipway / Landing Stage / Pier / Jetty / Pontoon / Terminal / Berthing / Quay", "Harbour", Class)) %>% 
+  mutate(Class = gsub("Indoor / Outdoor Leisure / Sporting Activity / Centre", "Leisure", Class)) %>% 
+  mutate(Class = gsub("Warehouse / Store / Storage Depot", "Industry", Class)) %>% 
+  mutate(Class = gsub("Factory/Manufacturing", "Industry", Class)) %>% 
+  mutate(Class = gsub("Office / Work Studio", "Office", Class)) %>% 
+  mutate(Class = gsub("Shop / Showroom", "Shop", Class)) %>% 
+  mutate(Class = gsub("HMO Bedsit / Other Non Self Contained Accommodation", "HMO", Class)) %>% 
+  mutate(Class = gsub("Semi-Detached", "House", Class)) %>% 
+  mutate(Class = gsub("Dwelling", "House", Class)) %>% 
+  mutate(Class = gsub("Terraced", "House", Class)) %>% 
+  mutate(Class = gsub("Industrial Applicable to manufacturing, engineering, maintenance, storage / wholesale distribution and extraction sites", "Industry", Class)) %>% 
+  mutate(Class = gsub("Workshop / Light Industrial", "Industry", Class)) %>% 
+  mutate(Class = gsub("Self Contained Flat \\(Includes Maisonette / Apartment\\)", "Flat", Class)) 
+
+gis_portsmouth_gaze %>%
+  group_by(Class) %>% 
+  summarise(Count = n()) %>% 
+  arrange(desc(Count)) %>% 
+  head(50)
+```
+
+
+```{r}
+
+loc_icon <- makeIcon(iconUrl = "https://cdn0.iconfinder.com/data/icons/map-location-solid-style/91/Map_-_Location_Solid_Style_01-512.png", 
+                     iconWidth = 10, iconHeight = 10, )
+
+
+leaflet() %>% 
+  addTiles(group = "Base") %>%
+  addProviderTiles(providers$OpenStreetMap.BlackAndWhite, group = "BW") %>% 
+  #House
+  addCircleMarkers(data = gis_portsmouth_gaze[gis_portsmouth_gaze$Class == "House", ], 
+                   color = "orange", fillOpacity = 0.8, label = "House", 
+                   weight = 0, radius = 3, 
+                   group = "Domestic") %>% 
+  #Flat
+  addMarkers(data = gis_portsmouth_gaze[gis_portsmouth_gaze$Class == "Flat", ], 
+             #color = "firebrick", fillOpacity = 0.8, label = "Flat", 
+             icon = loc_icon,
+             group = "Domestic") %>% 
+  #Office
+  addCircleMarkers(data = gis_portsmouth_gaze[gis_portsmouth_gaze$Class == "Office", ], 
+                   color = "darkgreen", fillOpacity = 0.8, label = "Office", 
+                   weight = 0, radius = 5, 
+                   group = "Office") %>% 
+  #Shop
+  addCircleMarkers(data = gis_portsmouth_gaze[gis_portsmouth_gaze$Class == "Shop", ], 
+                   color = "green", fillOpacity = 0.8, label = "Shops", 
+                   weight = 0, radius = 5, 
+                   group = "Shop") %>%   
+  #Industry
+  addCircleMarkers(data = gis_portsmouth_gaze[gis_portsmouth_gaze$Class == "Industry", ], 
+                   color = "darkslategray", fillOpacity = 0.8, label = "Industry", 
+                   weight = 0, radius = 5, 
+                   group = "Industry") %>% 
+  #Restaurant / Cafeteria
+  addCircleMarkers(data = gis_portsmouth_gaze[gis_portsmouth_gaze$Class == "Restaurant / Cafeteria", ], 
+                   color = "dodgerblue", fillOpacity = 0.8, label = "Restaurant / Cafeteria", 
+                   weight = 0, radius = 5, 
+                   group = "Restaurant") %>% 
+  #Substation
+  addCircleMarkers(data = gis_portsmouth_gaze[gis_portsmouth_gaze$Class == "Electricity Sub-Station", ], 
+                   color = "black", fillOpacity = 0.8, label = "Substation", 
+                   weight = 0, radius = 5, 
+                   group = "Substation") %>% 
+  addLayersControl(overlayGroups = c("Base", "BW", "Domestic", "Office", "Shop", "Industry", "Restaurant", "Substation"))
+
+?makeIcon
+
+```
+
+Method below is to automatically create a list of items for LayerControl
+
+for(i in class_bands){
+  iBand <- gis_portsmouth_gaze[gis_portsmouth_gaze$Class == i, ]
+  map_portsmouth_gaze <- map_portsmouth_gaze %>% 
+    addCircleMarkers(data = iBand,  radius = 5 , stroke = 0 ,opacity = 0.9, weight = 0 ,fillOpacity = 1, 
+                     fillColor = ~colour_bands(Class) , label = ~Class, group = i )
+}
+
+map_portsmouth_gaze %>% 
+  addLayersControl(overlayGroups = class_bands)
+
+
+
+```{r}
+#Compare energy consumption with GVA - UK v SE v Portsmouth & other cities
+
+excelFile_cityEnergy <- "../Energy_UK/Local_authority_final_energy_2005_2015_edited.xlsx"
+sheetNames_cityEnergy <- readxl::excel_sheets(excelFile_cityEnergy) 
+
+ImportXLSX_finalEnergy <- function(x){
+  temp <- readxl::read_xlsx(excelFile_cityEnergy, sheet = x , col_names = T, skip = 1)
+  
+  temp <- temp %>% 
+    gather(Category, GWh, -`LAU1 Code`, -`Government Office Regions and LAU1 Areas`) %>% 
+    setnames(c("LA_code", "City", "Category", "GWh") ) %>% 
+    mutate(GWh = as.numeric(GWh)) %>% 
+    mutate(Year = x)
+  #dplyr::select(1:49) %>% 
+  #setNames(c("Date", format(seq.POSIXt(as.POSIXct(Sys.Date()+1/48), as.POSIXct(Sys.Date()+1), by = "30 min"),"%H:%M", tz="GMT"))) %>% 
+  #mutate(Sheet = x) %>% 
+  #separate(Building, into = c("Building"), "_30kWp") %>% 
+  #gather(Time, Power, -Date, -Building)  %>% 
+  #mutate(DateTime = paste(Date, " ", Time)) %>% 
+  #unite(DateTime, c("Date", "Time"), sep = " ") %>% 
+  #mutate(DateTime = ymd_hm(DateTime))
+  #    mutate(Time = as.POSIXct(Time, format = "%H:%M", tz="GMT")) 
+  return(temp)
+}
+
+#rm(city_Energy)
+# CDE_demand: half hourly power consumption of all four buildings in 2017/18
+city_Energy <- lapply(sheetNames_cityEnergy, ImportXLSX_finalEnergy) %>%
+  bind_rows()  # the "bind_row" binds all rows together. in this case, a long table is easier to manage
+
+head(city_Energy)
+unique(city_Energy$Category)
+
+city_Energy %>% 
+  filter(City == "Northern Ireland (6)")
+
+```
+
+```{r}
+# tidy up Category column
+city_Energy <- city_Energy %>% 
+  separate(Category, into=c("Fuel", "Sector"), sep="-") %>% 
+  mutate(Fuel = gsub("\\([1-9]\\)", "", Fuel)) 
+
+# separate regions from cities
+city_Energy %>% 
+  #mutate(Region = )
+  mutate(Length = nchar(LA_code)) %>% 
+  filter(Length == 3) %>% 
+  group_by(City) %>% 
+  summarise(Code = LA_code[1]) -> List_city_code
+#distinct(City) %>% 
+#group_by(Length) %>% 
+#summarise(Count = n())
+#distinct(City) %>% 
+List_city_code <- List_city_code %>% 
+  setnames(c("Region", "Code"))
+
+nrow(city_Energy)
+
+city_Energy_pre2014 <- city_Energy %>% 
+  mutate(regionCode = substr(LA_code, 1,3)) %>% 
+  left_join(List_city_code, by= c("regionCode" = "Code")) %>% 
+  dplyr::select(-regionCode) %>% 
+  filter(!is.na(Region))  # %>% 
+#filter(nchar(LA_code) == 7) %>% 
+#group_by(City) %>% 
+#summarise(Region = Region[1]) -> List_city_region
+
+city_Energy_pre2014 %>% 
+  head()
+
+List_city_region2015 <- read.csv("../Energy_UK/City_region_list_2015.csv", header = T, stringsAsFactors = F) %>% 
+  setnames(c("LA_code", "City", "Region"))
+head(List_city_region2015)
+
+
+la_Energy <- city_Energy %>% 
+  filter(Year == 2015) %>% 
+  left_join(List_city_region2015, by = "LA_code") %>% 
+  dplyr::select(LA_code, City = City.x, Fuel, Sector, GWh, Year, Region) %>% 
+  rbind(city_Energy_pre2014) %>% 
+  filter(substr(City,1,5)!="TOTAL") %>% 
+  mutate(Region = gsub("TOTAL EAST ", "TOTAL EAST", Region)) %>% 
+  filter(!is.na(Region)) %>% 
+  mutate(Year = as.numeric(Year)) %>% 
+  mutate(Region = gsub("TOTAL ", "", Region)) %>% 
+  mutate(Sector = ifelse(Fuel == "Bioenergy & wastes", "Bioenergy", Sector)) %>% 
+  mutate(Sector = ifelse(Fuel == "All fuels", "All fuels", Sector)) %>% 
+  filter(Sector != "Total") %>% 
+  mutate(Sector = gsub("Industrial & Commercial", "Industry & Commercial", Sector))
+
+la_Energy %>% 
+  #filter(City == "Northern Ireland (6)")
+  filter(Region == "TOTAL NORTHERN IRELAND" & Fuel == "All fuels" & Year == 2015)
+
+```
+
+
+```{r}
+la_Energy %>%
+  #filter(Region != "TOTAL GREATER LONDON") %>% 
+  filter(Fuel == "All fuels") %>% 
+  #filter(Region == "TOTAL EAST ") %>% 
+  #distinct(Region)
+  group_by(Region, Year) %>% 
+  summarise(Energy = sum(GWh)) %>% 
+  ungroup() %>% 
+  #head()
+  ggplot()+
+  #geom_area(aes(x=Year, y=Energy, group=Region, fill = Region))+
+  geom_line(aes(x=Year, y=Energy/1000, group=Region, colour = Region))+
+  geom_point(aes(x=Year, y=Energy/1000, group=Region, colour = Region))+
+  #geom_text(aes(x=2010, y=Energy, group = Region, colour = Region, label=Region))+
+  labs(y="TWh")+
+  scale_colour_brewer(palette = "Paired") ->fig_temp
+
+ggplotly(fig_temp)
+
+
+
+```
+
+
+```{r}
+la_Energy %>% 
+  filter(Year == 2015 & City == "Southampton")
+
+la_Energy %>% 
+  #filter(Region == "SOUTH EAST") %>% 
+  filter(Fuel == "Consuming Sector ") %>% 
+  #filter(Sector != "All fuels") %>% 
+  group_by(Year, Region, Sector) %>% 
+  summarise(Energy = sum(GWh)) %>% 
+  #head()
+  ggplot()+
+  facet_wrap(~Region)+
+  geom_area(aes(x=Year, y=Energy, group = Sector, fill = Sector))
+```
+
+
+```{r}
+excelFile_sseMap <- "../Energy_UK/SSEPDAvailabilityMap_21062018.xlsx"
+sheetNames_sseMap <- readxl::excel_sheets(excelFile_sseMap) 
+sheetNames_sseMap
+
+gis_sse_PSS <- readxl::read_xlsx(excelFile_sseMap, sheet = sheetNames_sseMap[3], col_names = T) %>% 
+  mutate(Latitude = as.numeric(Latitude), 
+         Longitude = as.numeric(Longitude))
+
+head(gis_sse_PSS)
+```
+
+```{r}
+leaflet() %>%
+  addTiles() %>% 
+  addCircleMarkers(data = gis_sse_PSS[gis_sse_PSS$`Transmission Status`=="Unconstrained",], 
+                   lng = ~Longitude, lat = ~Latitude, radius = 5,  popup = ~`Primary Substation Name`,
+                   fillColor = "green" , fillOpacity = 1, stroke = 0, weight = 0 , 
+                   group = "Unconstrained") %>% 
+  addCircleMarkers(data = gis_sse_PSS[gis_sse_PSS$`Transmission Status`=="Constrained",], 
+                   lng = ~Longitude, lat = ~Latitude, radius = 5, popup = ~`Primary Substation Name`,
+                   fillColor = "red" , fillOpacity = 1, stroke = 0, weight = 0 , 
+                   group = "Constrained") %>% 
+  addLayersControl(overlayGroups = c("Unconstrained", "Constrained"))
+```
+
+```{r}
+pv <- read.csv("../Energy_UK/PV_installation_2018.csv", header = T, sep = "," , stringsAsFactors = F) %>% 
+  gather(Category, Amount, -Year, -Month) %>% 
+  separate(Category, into=c("Category", "Section"), sep="_") %>% 
+  mutate(Section = gsub("\\.", "_", Section)) %>% 
+  mutate(Section = gsub("_MW", "MW", Section)) %>% 
+  mutate(Section = gsub("_kW", "kW", Section)) %>% 
+  mutate(Month = gsub("April.", "Apr", Month)) %>% 
+  mutate(Date = paste(Year, Month,"01", sep = "-")) %>% 
+  mutate(Date = as.Date(Date, format = "%Y-%b-%d")) %>% 
+  dplyr::select(Date, Category, Section, Amount) %>% 
+  #filter(is.na(Date)) %>% 
+  #filter(Month=="Apr") %>% 
+  #head(1000)
+  mutate(New = Amount - lag(Amount) ) %>% 
+  mutate(New = ifelse(Date == as.Date("2010-01-01"), 0, New))
+
+head(pv)
+
+pv %>% 
+  filter(Category == "Count") %>% 
+  ggplot()+
+  geom_area(aes(x=Date, y=New, group = Section, fill = Section))+
+  labs(y="Count", title="New installation in each month")+
+  theme_minimal()+
+  scale_x_date(date_breaks = "12 month", date_minor_breaks = "3 month", date_labels = "%Y")
+head(200)
+
+
+```
+
+
+```{r}
+library(raster)
+
+lidar <- raster("../GIS/Portsmouth/LiDAR/su6503_DSM_1m.asc")
+
+#crs for GB
+#crs(lidar) <- sp::CRS("+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +a=6377563 +b=6356256.161 +towgs84=446.448,-125.157,542.060,0.1502,0.2470,0.8421,-20.4894 +units=m +no_defs ")
+
+crs(lidar) <- CRS("+init=epsg:27700")
+
+raster::writeRaster(lidar, "test")
+
+lidar2 <- raster("test")
+lidar2
+
+str(lidar)
+
+pal <- colorNumeric(c("#FFFFCC", "#41B6C4", "#0C2C84" ), values(lidar),
+                    na.color = "transparent")
+
+pal <- colorNumeric(c("white", "black" ), values(lidar),
+                    na.color = "transparent")
+
+pal <- colorNumeric("RdYlGn", values(lidar), na.color = "transparent")
+
+leaflet() %>% 
+  addTiles() %>% 
+  addRasterImage(lidar,
+                 color = pal, 
+                 opacity = 0.99, 
+                 group = "LiDAR"  ) %>% 
+  addLegend(pal = pal,
+            values = values(lidar), 
+            title = "Height, m") %>% 
+  addLayersControl(overlayGroups = c("LiDAR"), options = layersControlOptions(collapsed = FALSE)) 
+
+
+```
+
+
+
+```{r}
+ehh <- read.csv("../Energy_UK/elexon/0000021844_fuelhh_2018.csv", header = T, sep = ",")
+
+head(ehh)
+```
+
+```{r}
+ehh %>%
+  mutate(Sum = rowSums(.[3:16])) %>% 
+  mutate(H = floor((Settlement.Period - 1)/2)) %>% 
+  mutate(S = ( floor(Settlement.Period /2) - H) * 30 ) %>% 
+  mutate(Time = paste(H, ":", S, ":00", sep = "")) %>% 
+  dplyr::select(X.Settlement.Date, Sum, Time) %>% 
+  mutate(Time = paste(X.Settlement.Date, Time) )%>% 
+  mutate(Time = as.POSIXct(Time, format = "%Y-%m-%d %H:%M:%S")) %>% 
+  ggplot()+
+  geom_line(aes(x=Time, y=Sum)) -> fig_temp
+head(50)
+
+ggplotly(fig_temp)
+```
+
+
+```{r}
+fileList <- list.files("./Data/", full.names = T)
+
+lapply(fileList, function(eachfile){
+  file.rename(from = eachfile, to = sub(pattern="CopyOf", replacement="", eachfile))
+})
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
